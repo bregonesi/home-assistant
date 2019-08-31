@@ -3,7 +3,8 @@
   "name": "Broadlink",
   "documentation": "https://www.home-assistant.io/components/broadlink",
   "requirements": [
-    "broadlink==0.11.1"
+    "broadlink==0.11.1",
+    "BroadlinkWifiThermostat==2.4.1"
   ],
   "dependencies": [],
   "codeowners": [

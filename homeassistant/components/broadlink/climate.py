@@ -10,15 +10,13 @@ import voluptuous as vol
 
 from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateDevice
 from homeassistant.components.climate.const import (
-    DOMAIN, STATE_AUTO, STATE_HEAT, SUPPORT_AWAY_MODE, SUPPORT_OPERATION_MODE,
-    SUPPORT_TARGET_TEMPERATURE)
+    DOMAIN, HVAC_MODE_OFF, HVAC_MODE_AUTO, HVAC_MODE_HEAT, SUPPORT_PRESET_MODE,
+    SUPPORT_TARGET_TEMPERATURE, PRESET_NONE, PRESET_AWAY,
+    CURRENT_HVAC_OFF, CURRENT_HVAC_HEAT, CURRENT_HVAC_IDLE)
 from homeassistant.const import (
     ATTR_ENTITY_ID, ATTR_TEMPERATURE, CONF_FRIENDLY_NAME, CONF_HOST, CONF_MAC,
-    PRECISION_HALVES, STATE_OFF, TEMP_CELSIUS)
+    PRECISION_HALVES, TEMP_CELSIUS)
 import homeassistant.helpers.config_validation as cv
-
-
-REQUIREMENTS = ['BroadlinkWifiThermostat==2.4.1']
 
 CONF_EXTERNAL_TEMP = 'external_temp'
 CONF_AWAY_TEMP = 'away_temp'
@@ -150,11 +148,10 @@ def setup_platform(hass, config, async_add_entities,
         advance_conf['adj'] = service.data.get(ATTR_ADJ)
         advance_conf['fre'] = service.data.get(ATTR_FRE)
         advance_conf['pon'] = service.data.get(ATTR_PON)
-        for thermostat in target_thermostats:
-            thermostat.set_advanced_conf(advance_conf)
+        target_thermostats.set_advanced_config(advance_conf)
 
     hass.services.register(DOMAIN, SERVICE_SET_ADVANCED_CONF,
-                           set_advanced_conf, schema=SET_ADVANCED_CONF_SCHEMA)
+                           set_advanced_conf, schema=SET_SCHEDULE_SCHEMA)
 
 
 class BroadlinkThermostat(ClimateDevice):
@@ -163,18 +160,7 @@ class BroadlinkThermostat(ClimateDevice):
     def __init__(self, device):
         """Initialize the climate device."""
         self._device = device
-        device.set_time()
-
-    @property
-    def state(self):
-        """Return climate state."""
-        return self._device.state
-
-    @property
-    def supported_features(self):
-        """Return the list of supported features."""
-        return SUPPORT_TARGET_TEMPERATURE | SUPPORT_OPERATION_MODE \
-                                          | SUPPORT_AWAY_MODE
+        # device.set_time()  # this method is bugged, so let's ignore it
 
     @property
     def name(self):
@@ -182,9 +168,33 @@ class BroadlinkThermostat(ClimateDevice):
         return self._device.name
 
     @property
+    def precision(self):
+        """Return the precision of the system."""
+        return PRECISION_HALVES
+
+    @property
     def temperature_unit(self):
         """Return the unit of measurement."""
         return TEMP_CELSIUS
+
+    @property
+    def hvac_mode(self):
+        """Return current operation."""
+        return self._device.current_operation
+
+    @property
+    def hvac_modes(self):
+        """List of available operation modes."""
+        return [HVAC_MODE_OFF, HVAC_MODE_AUTO, HVAC_MODE_HEAT]
+
+    @property
+    def hvac_action(self):
+        """Return the current running hvac operation."""
+        if self._device.current_operation == HVAC_MODE_OFF:
+            return CURRENT_HVAC_OFF
+        if self._device.state == HVAC_MODE_HEAT:
+            return CURRENT_HVAC_HEAT
+        return CURRENT_HVAC_IDLE
 
     @property
     def current_temperature(self):
@@ -197,54 +207,43 @@ class BroadlinkThermostat(ClimateDevice):
         return self._device.target_temperature
 
     @property
-    def current_operation(self):
-        """Return current operation."""
-        return self._device.current_operation
+    def preset_mode(self):
+        """Return present mode."""
+        if self._device.away:
+            return PRESET_AWAY
+        return PRESET_NONE
 
     @property
-    def operation_list(self):
-        """List of available operation modes."""
-        return [STATE_AUTO, STATE_HEAT, STATE_OFF]
+    def preset_modes(self):
+        """Return preset modes."""
+        return [PRESET_NONE, PRESET_AWAY]
 
-    @property
-    def is_away_mode_on(self):
-        """Return if away mode is on."""
-        return self._device.away
-
-    @property
-    def is_on(self):
-        """Return true if the device is on."""
-        return not self._device.current_operation == STATE_OFF
-
-    @property
-    def precision(self):
-        """Return the precision of the system."""
-        return PRECISION_HALVES
+    def set_advanced_config(self, advanced_conf):
+        """Set advanced configuration."""
+        self._device.set_advanced_config(self, advanced_conf)
 
     def set_temperature(self, **kwargs):
         """Set new target temperature."""
         if kwargs.get(ATTR_TEMPERATURE) is not None:
             self._device.set_temperature(kwargs.get(ATTR_TEMPERATURE))
 
-    def set_operation_mode(self, operation_mode):
-        """Set operation mode."""
-        self._device.set_operation_mode(operation_mode)
+    def set_hvac_mode(self, hvac_mode):
+        """Set hvac mode."""
+        self._device.set_operation_mode(hvac_mode)
+
+    def set_preset_mode(self, preset_mode):
+        """Set new preset mode."""
+        away = preset_mode == PRESET_AWAY
+        self._device.set_away(away)
 
     def set_schedule(self, schedules):
         """Set automatic schedule."""
         self._device.set_schedule(schedules)
 
-    def set_advanced_config(self, advanced_conf):
-        """Set advanced configuration."""
-        self._device.set_advanced_config(self, advanced_conf)
-
-    def turn_away_mode_on(self):
-        """Turn away mode on."""
-        self._device.set_away(True)
-
-    def turn_away_mode_off(self):
-        """Turn away mode off."""
-        self._device.set_away(False)
+    @property
+    def supported_features(self):
+        """Return the list of supported features."""
+        return SUPPORT_TARGET_TEMPERATURE | SUPPORT_PRESET_MODE
 
     def update(self):
         """Update component data."""

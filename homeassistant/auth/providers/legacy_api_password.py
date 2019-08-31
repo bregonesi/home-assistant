@@ -3,108 +3,116 @@ Support Legacy API password auth provider.
 
 It will be removed when auth system production ready
 """
-from collections import OrderedDict
 import hmac
+from typing import Any, Dict, Optional, cast
 
 import voluptuous as vol
 
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant import data_entry_flow
-from homeassistant.core import callback
+import homeassistant.helpers.config_validation as cv
 
-from . import AuthProvider, AUTH_PROVIDER_SCHEMA, AUTH_PROVIDERS
+from . import AuthProvider, AUTH_PROVIDER_SCHEMA, AUTH_PROVIDERS, LoginFlow
+from .. import AuthManager
+from ..models import Credentials, UserMeta, User
 
+AUTH_PROVIDER_TYPE = "legacy_api_password"
+CONF_API_PASSWORD = "api_password"
 
-USER_SCHEMA = vol.Schema({
-    vol.Required('username'): str,
-})
+CONFIG_SCHEMA = AUTH_PROVIDER_SCHEMA.extend(
+    {vol.Required(CONF_API_PASSWORD): cv.string}, extra=vol.PREVENT_EXTRA
+)
 
-
-CONFIG_SCHEMA = AUTH_PROVIDER_SCHEMA.extend({
-}, extra=vol.PREVENT_EXTRA)
-
-LEGACY_USER = 'homeassistant'
+LEGACY_USER_NAME = "Legacy API password user"
 
 
 class InvalidAuthError(HomeAssistantError):
     """Raised when submitting invalid authentication."""
 
 
-@AUTH_PROVIDERS.register('legacy_api_password')
+async def async_validate_password(hass: HomeAssistant, password: str) -> Optional[User]:
+    """Return a user if password is valid. None if not."""
+    auth = cast(AuthManager, hass.auth)  # type: ignore
+    providers = auth.get_auth_providers(AUTH_PROVIDER_TYPE)
+    if not providers:
+        raise ValueError("Legacy API password provider not found")
+
+    try:
+        provider = cast(LegacyApiPasswordAuthProvider, providers[0])
+        provider.async_validate_login(password)
+        return await auth.async_get_or_create_user(
+            await provider.async_get_or_create_credentials({})
+        )
+    except InvalidAuthError:
+        return None
+
+
+@AUTH_PROVIDERS.register(AUTH_PROVIDER_TYPE)
 class LegacyApiPasswordAuthProvider(AuthProvider):
-    """Example auth provider based on hardcoded usernames and passwords."""
+    """An auth provider support legacy api_password."""
 
-    DEFAULT_TITLE = 'Legacy API Password'
+    DEFAULT_TITLE = "Legacy API Password"
 
-    async def async_credential_flow(self):
+    @property
+    def api_password(self) -> str:
+        """Return api_password."""
+        return str(self.config[CONF_API_PASSWORD])
+
+    async def async_login_flow(self, context: Optional[Dict]) -> LoginFlow:
         """Return a flow to login."""
-        return LoginFlow(self)
+        return LegacyLoginFlow(self)
 
     @callback
-    def async_validate_login(self, password):
-        """Helper to validate a username and password."""
-        if not hasattr(self.hass, 'http'):
-            raise ValueError('http component is not loaded')
+    def async_validate_login(self, password: str) -> None:
+        """Validate password."""
+        api_password = str(self.config[CONF_API_PASSWORD])
 
-        if self.hass.http.api_password is None:
-            raise ValueError('http component is not configured using'
-                             ' api_password')
-
-        if not hmac.compare_digest(self.hass.http.api_password.encode('utf-8'),
-                                   password.encode('utf-8')):
+        if not hmac.compare_digest(
+            api_password.encode("utf-8"), password.encode("utf-8")
+        ):
             raise InvalidAuthError
 
-    async def async_get_or_create_credentials(self, flow_result):
-        """Return LEGACY_USER always."""
-        for credential in await self.async_credentials():
-            if credential.data['username'] == LEGACY_USER:
-                return credential
+    async def async_get_or_create_credentials(
+        self, flow_result: Dict[str, str]
+    ) -> Credentials:
+        """Return credentials for this login."""
+        credentials = await self.async_credentials()
+        if credentials:
+            return credentials[0]
 
-        return self.async_create_credentials({
-            'username': LEGACY_USER
-        })
+        return self.async_create_credentials({})
 
-    async def async_user_meta_for_credentials(self, credentials):
+    async def async_user_meta_for_credentials(
+        self, credentials: Credentials
+    ) -> UserMeta:
         """
-        Set name as LEGACY_USER always.
+        Return info for the user.
 
         Will be used to populate info when creating a new user.
         """
-        return {
-            'name': LEGACY_USER,
-            'is_active': True,
-        }
+        return UserMeta(name=LEGACY_USER_NAME, is_active=True)
 
 
-class LoginFlow(data_entry_flow.FlowHandler):
+class LegacyLoginFlow(LoginFlow):
     """Handler for the login flow."""
 
-    def __init__(self, auth_provider):
-        """Initialize the login flow."""
-        self._auth_provider = auth_provider
-
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(
+        self, user_input: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         """Handle the step of the form."""
         errors = {}
 
         if user_input is not None:
             try:
-                self._auth_provider.async_validate_login(
-                    user_input['password'])
+                cast(
+                    LegacyApiPasswordAuthProvider, self._auth_provider
+                ).async_validate_login(user_input["password"])
             except InvalidAuthError:
-                errors['base'] = 'invalid_auth'
+                errors["base"] = "invalid_auth"
 
             if not errors:
-                return self.async_create_entry(
-                    title=self._auth_provider.name,
-                    data={}
-                )
-
-        schema = OrderedDict()
-        schema['password'] = str
+                return await self.async_finish({})
 
         return self.async_show_form(
-            step_id='init',
-            data_schema=vol.Schema(schema),
-            errors=errors,
+            step_id="init", data_schema=vol.Schema({"password": str}), errors=errors
         )

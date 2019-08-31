@@ -1,9 +1,4 @@
-"""
-Support for functionality to have conversations with Home Assistant.
-
-For more details about this component, please refer to the documentation at
-https://home-assistant.io/components/conversation/
-"""
+"""Support for functionality to have conversations with Home Assistant."""
 import logging
 import re
 
@@ -11,45 +6,48 @@ import voluptuous as vol
 
 from homeassistant import core
 from homeassistant.components import http
-from homeassistant.components.http.data_validator import (
-    RequestDataValidator)
-from homeassistant.components.cover import (INTENT_OPEN_COVER,
-                                            INTENT_CLOSE_COVER)
+from homeassistant.components.cover import INTENT_CLOSE_COVER, INTENT_OPEN_COVER
+from homeassistant.components.http.data_validator import RequestDataValidator
 from homeassistant.const import EVENT_COMPONENT_LOADED
 from homeassistant.core import callback
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import intent
+from homeassistant.helpers import config_validation as cv, intent
 from homeassistant.loader import bind_hass
-from homeassistant.setup import (ATTR_COMPONENT)
+from homeassistant.setup import ATTR_COMPONENT
+
+from .util import create_matcher
 
 _LOGGER = logging.getLogger(__name__)
 
-ATTR_TEXT = 'text'
+ATTR_TEXT = "text"
 
-DEPENDENCIES = ['http']
-DOMAIN = 'conversation'
+DOMAIN = "conversation"
 
-REGEX_TURN_COMMAND = re.compile(r'turn (?P<name>(?: |\w)+) (?P<command>\w+)')
-REGEX_TYPE = type(re.compile(''))
+REGEX_TURN_COMMAND = re.compile(r"turn (?P<name>(?: |\w)+) (?P<command>\w+)")
+REGEX_TYPE = type(re.compile(""))
 
 UTTERANCES = {
-    'cover': {
-        INTENT_OPEN_COVER: ['Open [the] [a] [an] {name}[s]'],
-        INTENT_CLOSE_COVER: ['Close [the] [a] [an] {name}[s]']
+    "cover": {
+        INTENT_OPEN_COVER: ["Open [the] [a] [an] {name}[s]"],
+        INTENT_CLOSE_COVER: ["Close [the] [a] [an] {name}[s]"],
     }
 }
 
-SERVICE_PROCESS = 'process'
+SERVICE_PROCESS = "process"
 
-SERVICE_PROCESS_SCHEMA = vol.Schema({
-    vol.Required(ATTR_TEXT): cv.string,
-})
+SERVICE_PROCESS_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
 
-CONFIG_SCHEMA = vol.Schema({DOMAIN: vol.Schema({
-    vol.Optional('intents'): vol.Schema({
-        cv.string: vol.All(cv.ensure_list, [cv.string])
-    })
-})}, extra=vol.ALLOW_EXTRA)
+CONFIG_SCHEMA = vol.Schema(
+    {
+        DOMAIN: vol.Schema(
+            {
+                vol.Optional("intents"): vol.Schema(
+                    {cv.string: vol.All(cv.ensure_list, [cv.string])}
+                )
+            }
+        )
+    },
+    extra=vol.ALLOW_EXTRA,
+)
 
 
 @core.callback
@@ -74,7 +72,7 @@ def async_register(hass, intent_type, utterances):
         if isinstance(utterance, REGEX_TYPE):
             conf.append(utterance)
         else:
-            conf.append(_create_matcher(utterance))
+            conf.append(create_matcher(utterance))
 
 
 async def async_setup(hass, config):
@@ -85,25 +83,26 @@ async def async_setup(hass, config):
     if intents is None:
         intents = hass.data[DOMAIN] = {}
 
-    for intent_type, utterances in config.get('intents', {}).items():
+    for intent_type, utterances in config.get("intents", {}).items():
         conf = intents.get(intent_type)
 
         if conf is None:
             conf = intents[intent_type] = []
 
-        conf.extend(_create_matcher(utterance) for utterance in utterances)
+        conf.extend(create_matcher(utterance) for utterance in utterances)
 
     async def process(service):
         """Parse text into commands."""
         text = service.data[ATTR_TEXT]
-        _LOGGER.debug('Processing: <%s>', text)
+        _LOGGER.debug("Processing: <%s>", text)
         try:
             await _process(hass, text)
         except intent.IntentHandleError as err:
-            _LOGGER.error('Error processing %s: %s', text, err)
+            _LOGGER.error("Error processing %s: %s", text, err)
 
     hass.services.async_register(
-        DOMAIN, SERVICE_PROCESS, process, schema=SERVICE_PROCESS_SCHEMA)
+        DOMAIN, SERVICE_PROCESS, process, schema=SERVICE_PROCESS_SCHEMA
+    )
 
     hass.http.register_view(ConversationProcessView)
 
@@ -111,18 +110,21 @@ async def async_setup(hass, config):
     # if a letter is not there. By removing 's' we can match singular and
     # plural names.
 
-    async_register(hass, intent.INTENT_TURN_ON, [
-        'Turn [the] [a] {name}[s] on',
-        'Turn on [the] [a] [an] {name}[s]',
-    ])
-    async_register(hass, intent.INTENT_TURN_OFF, [
-        'Turn [the] [a] [an] {name}[s] off',
-        'Turn off [the] [a] [an] {name}[s]',
-    ])
-    async_register(hass, intent.INTENT_TOGGLE, [
-        'Toggle [the] [a] [an] {name}[s]',
-        '[the] [a] [an] {name}[s] toggle',
-    ])
+    async_register(
+        hass,
+        intent.INTENT_TURN_ON,
+        ["Turn [the] [a] {name}[s] on", "Turn on [the] [a] [an] {name}[s]"],
+    )
+    async_register(
+        hass,
+        intent.INTENT_TURN_OFF,
+        ["Turn [the] [a] [an] {name}[s] off", "Turn off [the] [a] [an] {name}[s]"],
+    )
+    async_register(
+        hass,
+        intent.INTENT_TOGGLE,
+        ["Toggle [the] [a] [an] {name}[s]", "[the] [a] [an] {name}[s] toggle"],
+    )
 
     @callback
     def register_utterances(component):
@@ -146,39 +148,6 @@ async def async_setup(hass, config):
     return True
 
 
-def _create_matcher(utterance):
-    """Create a regex that matches the utterance."""
-    # Split utterance into parts that are type: NORMAL, GROUP or OPTIONAL
-    # Pattern matches (GROUP|OPTIONAL): Change light to [the color] {name}
-    parts = re.split(r'({\w+}|\[[\w\s]+\] *)', utterance)
-    # Pattern to extract name from GROUP part. Matches {name}
-    group_matcher = re.compile(r'{(\w+)}')
-    # Pattern to extract text from OPTIONAL part. Matches [the color]
-    optional_matcher = re.compile(r'\[([\w ]+)\] *')
-
-    pattern = ['^']
-    for part in parts:
-        group_match = group_matcher.match(part)
-        optional_match = optional_matcher.match(part)
-
-        # Normal part
-        if group_match is None and optional_match is None:
-            pattern.append(part)
-            continue
-
-        # Group part
-        if group_match is not None:
-            pattern.append(
-                r'(?P<{}>[\w ]+?)\s*'.format(group_match.groups()[0]))
-
-        # Optional part
-        elif optional_match is not None:
-            pattern.append(r'(?:{} *)?'.format(optional_match.groups()[0]))
-
-    pattern.append('$')
-    return re.compile(''.join(pattern), re.I)
-
-
 async def _process(hass, text):
     """Process a line of text."""
     intents = hass.data.get(DOMAIN, {})
@@ -191,27 +160,27 @@ async def _process(hass, text):
                 continue
 
             response = await hass.helpers.intent.async_handle(
-                DOMAIN, intent_type,
-                {key: {'value': value} for key, value
-                 in match.groupdict().items()}, text)
+                DOMAIN,
+                intent_type,
+                {key: {"value": value} for key, value in match.groupdict().items()},
+                text,
+            )
             return response
 
 
 class ConversationProcessView(http.HomeAssistantView):
     """View to retrieve shopping list content."""
 
-    url = '/api/conversation/process'
+    url = "/api/conversation/process"
     name = "api:conversation:process"
 
-    @RequestDataValidator(vol.Schema({
-        vol.Required('text'): str,
-    }))
+    @RequestDataValidator(vol.Schema({vol.Required("text"): str}))
     async def post(self, request, data):
         """Send a request for processing."""
-        hass = request.app['hass']
+        hass = request.app["hass"]
 
         try:
-            intent_result = await _process(hass, data['text'])
+            intent_result = await _process(hass, data["text"])
         except intent.IntentHandleError as err:
             intent_result = intent.IntentResponse()
             intent_result.async_set_speech(str(err))

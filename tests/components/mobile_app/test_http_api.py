@@ -2,14 +2,14 @@
 # pylint: disable=redefined-outer-name,unused-import
 import pytest
 
-from homeassistant.components.mobile_app.const import CONF_SECRET
+from homeassistant.components.mobile_app.const import CONF_SECRET, DOMAIN
 from homeassistant.const import CONF_WEBHOOK_ID
+from homeassistant.setup import async_setup_component
 
-from .const import REGISTER
-from . import authed_api_client  # noqa: F401
+from .const import REGISTER, RENDER_TEMPLATE
 
 
-async def test_registration(hass_client, authed_api_client):  # noqa: F811
+async def test_registration(hass, hass_client):
     """Test that registrations happen."""
     try:
         # pylint: disable=unused-import
@@ -21,45 +21,53 @@ async def test_registration(hass_client, authed_api_client):  # noqa: F811
 
     import json
 
-    resp = await authed_api_client.post(
-        '/api/mobile_app/registrations', json=REGISTER
-    )
+    await async_setup_component(hass, DOMAIN, {DOMAIN: {}})
+
+    api_client = await hass_client()
+
+    resp = await api_client.post("/api/mobile_app/registrations", json=REGISTER)
 
     assert resp.status == 201
     register_json = await resp.json()
     assert CONF_WEBHOOK_ID in register_json
     assert CONF_SECRET in register_json
 
+    entries = hass.config_entries.async_entries(DOMAIN)
+
+    assert entries[0].data["app_data"] == REGISTER["app_data"]
+    assert entries[0].data["app_id"] == REGISTER["app_id"]
+    assert entries[0].data["app_name"] == REGISTER["app_name"]
+    assert entries[0].data["app_version"] == REGISTER["app_version"]
+    assert entries[0].data["device_name"] == REGISTER["device_name"]
+    assert entries[0].data["manufacturer"] == REGISTER["manufacturer"]
+    assert entries[0].data["model"] == REGISTER["model"]
+    assert entries[0].data["os_name"] == REGISTER["os_name"]
+    assert entries[0].data["os_version"] == REGISTER["os_version"]
+    assert entries[0].data["supports_encryption"] == REGISTER["supports_encryption"]
+
     keylen = SecretBox.KEY_SIZE
     key = register_json[CONF_SECRET].encode("utf-8")
     key = key[:keylen]
-    key = key.ljust(keylen, b'\0')
+    key = key.ljust(keylen, b"\0")
 
-    payload = json.dumps({'template': 'Hello world'}).encode("utf-8")
+    payload = json.dumps(RENDER_TEMPLATE["data"]).encode("utf-8")
 
-    data = SecretBox(key).encrypt(payload,
-                                  encoder=Base64Encoder).decode("utf-8")
+    data = SecretBox(key).encrypt(payload, encoder=Base64Encoder).decode("utf-8")
 
-    container = {
-        'type': 'render_template',
-        'encrypted': True,
-        'encrypted_data': data,
-    }
+    container = {"type": "render_template", "encrypted": True, "encrypted_data": data}
 
-    webhook_client = await hass_client()
-
-    resp = await webhook_client.post(
-        '/api/webhook/{}'.format(register_json[CONF_WEBHOOK_ID]),
-        json=container
+    resp = await api_client.post(
+        "/api/webhook/{}".format(register_json[CONF_WEBHOOK_ID]), json=container
     )
 
     assert resp.status == 200
 
     webhook_json = await resp.json()
-    assert 'encrypted_data' in webhook_json
+    assert "encrypted_data" in webhook_json
 
-    decrypted_data = SecretBox(key).decrypt(webhook_json['encrypted_data'],
-                                            encoder=Base64Encoder)
+    decrypted_data = SecretBox(key).decrypt(
+        webhook_json["encrypted_data"], encoder=Base64Encoder
+    )
     decrypted_data = decrypted_data.decode("utf-8")
 
-    assert json.loads(decrypted_data) == {'rendered': 'Hello world'}
+    assert json.loads(decrypted_data) == {"one": "Hello world"}

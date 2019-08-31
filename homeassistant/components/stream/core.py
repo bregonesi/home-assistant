@@ -22,8 +22,8 @@ class StreamBuffer:
     """Represent a segment."""
 
     segment = attr.ib(type=io.BytesIO)
-    output = attr.ib()               # type=av.OutputContainer
-    vstream = attr.ib()              # type=av.VideoStream
+    output = attr.ib()  # type=av.OutputContainer
+    vstream = attr.ib()  # type=av.VideoStream
     astream = attr.ib(default=None)  # type=av.AudioStream
 
 
@@ -41,13 +41,20 @@ class StreamOutput:
 
     num_segments = 3
 
-    def __init__(self, stream) -> None:
+    def __init__(self, stream, timeout: int = 300) -> None:
         """Initialize a stream output."""
+        self.idle = False
+        self.timeout = timeout
         self._stream = stream
         self._cursor = None
         self._event = asyncio.Event()
         self._segments = deque(maxlen=self.num_segments)
         self._unsub = None
+
+    @property
+    def name(self) -> str:
+        """Return provider name."""
+        return None
 
     @property
     def format(self) -> str:
@@ -77,10 +84,11 @@ class StreamOutput:
 
     def get_segment(self, sequence: int = None) -> Any:
         """Retrieve a specific segment, or the whole list."""
+        self.idle = False
         # Reset idle timeout
         if self._unsub is not None:
             self._unsub()
-        self._unsub = async_call_later(self._stream.hass, 300, self._cleanup)
+        self._unsub = async_call_later(self._stream.hass, self.timeout, self._timeout)
 
         if not sequence:
             return self._segments
@@ -106,17 +114,18 @@ class StreamOutput:
     @callback
     def put(self, segment: Segment) -> None:
         """Store output."""
-        # Start idle timeout when we start recieving data
+        # Start idle timeout when we start receiving data
         if self._unsub is None:
             self._unsub = async_call_later(
-                self._stream.hass, 300, self._cleanup)
+                self._stream.hass, self.timeout, self._timeout
+            )
 
         if segment is None:
             self._event.set()
             # Cleanup provider
             if self._unsub is not None:
                 self._unsub()
-            self._cleanup()
+            self.cleanup()
             return
 
         self._segments.append(segment)
@@ -124,9 +133,18 @@ class StreamOutput:
         self._event.clear()
 
     @callback
-    def _cleanup(self, _now=None):
-        """Remove provider."""
-        self._segments = []
+    def _timeout(self, _now=None):
+        """Handle stream timeout."""
+        self._unsub = None
+        if self._stream.keepalive:
+            self.idle = True
+            self._stream.check_idle()
+        else:
+            self.cleanup()
+
+    def cleanup(self):
+        """Handle cleanup."""
+        self._segments = deque(maxlen=self.num_segments)
         self._stream.remove_provider(self)
 
 
@@ -143,11 +161,16 @@ class StreamView(HomeAssistantView):
 
     async def get(self, request, token, sequence=None):
         """Start a GET request."""
-        hass = request.app['hass']
+        hass = request.app["hass"]
 
-        stream = next((
-            s for s in hass.data[DOMAIN][ATTR_STREAMS].values()
-            if s.access_token == token), None)
+        stream = next(
+            (
+                s
+                for s in hass.data[DOMAIN][ATTR_STREAMS].values()
+                if s.access_token == token
+            ),
+            None,
+        )
 
         if not stream:
             raise web.HTTPNotFound()
